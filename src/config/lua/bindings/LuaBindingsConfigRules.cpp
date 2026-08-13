@@ -877,6 +877,20 @@ static int hlGesture(lua_State* L) {
 
 #undef GET_ACTION_STRING
 
+    // "workspace" action: how many workspace IDs a full swipe jumps (grid row/column size). Default 1 = adjacent.
+    int step = 1;
+    lua_getfield(L, 1, "step");
+    if (!lua_isnil(L, -1)) {
+        CLuaConfigInt stepParser(1, 1, 1000);
+        auto          stepErr = stepParser.parse(L);
+        if (stepErr.errorCode != PARSE_ERROR_OK) {
+            lua_pop(L, 1);
+            return Internal::configError(L, std::format("hl.gesture: field \"step\": {}", stepErr.message));
+        }
+        step = stepParser.parsed();
+    }
+    lua_pop(L, 1);
+
     uint32_t modMask = 0;
     lua_getfield(L, 1, "mods");
     if (!lua_isnil(L, -1)) {
@@ -935,7 +949,7 @@ static int hlGesture(lua_State* L) {
         const auto& action = actionParser.parsed();
 
         if (action == "workspace")
-            result = g_pTrackpadGestures->addGesture(makeUnique<CWorkspaceSwipeGesture>(), fingerCount, direction, modMask, deltaScale, disableInhibit);
+            result = g_pTrackpadGestures->addGesture(makeUnique<CWorkspaceSwipeGesture>(step), fingerCount, direction, modMask, deltaScale, disableInhibit);
         else if (action == "resize")
             result = g_pTrackpadGestures->addGesture(makeUnique<CResizeTrackpadGesture>(), fingerCount, direction, modMask, deltaScale, disableInhibit);
         else if (action == "move")

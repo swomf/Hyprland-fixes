@@ -1,5 +1,7 @@
 #include "UnifiedWorkspaceSwipeGesture.hpp"
 
+#include <format>
+
 #include "../../Compositor.hpp"
 #include "../../state/WorkspaceState.hpp"
 #include "../../desktop/state/FocusState.hpp"
@@ -13,7 +15,7 @@ bool CUnifiedWorkspaceSwipeGesture::isGestureInProgress() {
     return !!m_workspaceBegin;
 }
 
-void CUnifiedWorkspaceSwipeGesture::begin() {
+void CUnifiedWorkspaceSwipeGesture::begin(int step, std::optional<bool> vertical) {
     if (isGestureInProgress())
         return;
 
@@ -21,6 +23,8 @@ void CUnifiedWorkspaceSwipeGesture::begin() {
 
     Log::logger->log(Log::DEBUG, "CUnifiedWorkspaceSwipeGesture::begin: Starting a swipe from {}", PWORKSPACE->m_name);
 
+    m_step           = std::max(1, step);
+    m_vertical       = vertical;
     m_workspaceBegin = PWORKSPACE;
     m_delta          = 0;
     m_monitor        = Desktop::focusState()->monitor();
@@ -53,15 +57,19 @@ void CUnifiedWorkspaceSwipeGesture::update(double delta) {
     const auto   XDISTANCE     = m_monitor->m_size.x + *PWORKSPACEGAP;
     const auto   YDISTANCE     = m_monitor->m_size.y + *PWORKSPACEGAP;
     const auto   ANIMSTYLE     = m_workspaceBegin->m_renderOffset->getStyle();
-    const bool   VERTANIMS     = ANIMSTYLE == "slidevert" || ANIMSTYLE.starts_with("slidefadevert");
+    const bool   VERTANIMS     = m_vertical.value_or(ANIMSTYLE == "slidevert" || ANIMSTYLE.starts_with("slidefadevert"));
     const double d             = m_delta - delta;
     m_delta                    = delta;
 
     m_avgSpeed = (m_avgSpeed * m_speedPoints + abs(d)) / (m_speedPoints + 1);
     m_speedPoints++;
 
-    auto workspaceIDLeft  = getWorkspaceIDNameFromString((*PSWIPEUSER ? "r-1" : "m-1")).id;
-    auto workspaceIDRight = getWorkspaceIDNameFromString((*PSWIPEUSER ? "r+1" : "m+1")).id;
+    // For grid jumps (m_step > 1) we address workspaces by numeric id (r+-step); otherwise keep the classic
+    // monitor-relative adjacent behavior (m±1) unless workspace_swipe_use_r is set.
+    const bool USEREAL              = *PSWIPEUSER || m_step != 1;
+    auto       workspaceIDLeft      = getWorkspaceIDNameFromString(std::format("{}-{}", USEREAL ? "r" : "m", m_step)).id;
+    auto       workspaceIDRight     = getWorkspaceIDNameFromString(std::format("{}+{}", USEREAL ? "r" : "m", m_step)).id;
+    const bool OVERSHOOTSLOWERBOUND = m_step > 1 && m_workspaceBegin->m_id > 0 && m_step >= m_workspaceBegin->m_id;
 
     if ((workspaceIDLeft == WORKSPACE_INVALID || workspaceIDRight == WORKSPACE_INVALID || workspaceIDLeft == m_workspaceBegin->m_id) && !*PSWIPENEW) {
         m_workspaceBegin = nullptr; // invalidate the swipe
@@ -73,7 +81,9 @@ void CUnifiedWorkspaceSwipeGesture::update(double delta) {
     m_delta = std::clamp(m_delta, sc<double>(-SWIPEDISTANCE), sc<double>(SWIPEDISTANCE));
 
     if ((m_workspaceBegin->m_id == workspaceIDLeft && *PSWIPENEW && (m_delta < 0)) ||
-        (m_delta > 0 && m_workspaceBegin->getWindowCount() == 0 && workspaceIDRight <= m_workspaceBegin->m_id) || (m_delta < 0 && m_workspaceBegin->m_id <= workspaceIDLeft)) {
+        (m_delta > 0 && m_workspaceBegin->getWindowCount() == 0 && workspaceIDRight <= m_workspaceBegin->m_id) || (m_delta < 0 && m_workspaceBegin->m_id <= workspaceIDLeft) ||
+        // r-N resolves an overshoot to workspace 1, so compare the requested step with the starting ID instead.
+        (m_delta < 0 && OVERSHOOTSLOWERBOUND)) {
 
         m_delta = 0;
         g_pHyprRenderer->damageMonitor(m_monitor.lock());
@@ -193,17 +203,19 @@ void CUnifiedWorkspaceSwipeGesture::end() {
     static auto PSWIPEUSER    = CConfigValue<Config::INTEGER>("gestures:workspace_swipe_use_r");
     static auto PWORKSPACEGAP = CConfigValue<Config::INTEGER>("general:gaps_workspaces");
     const auto  ANIMSTYLE     = m_workspaceBegin->m_renderOffset->getStyle();
-    const bool  VERTANIMS     = ANIMSTYLE == "slidevert" || ANIMSTYLE.starts_with("slidefadevert");
+    const bool  VERTANIMS     = m_vertical.value_or(ANIMSTYLE == "slidevert" || ANIMSTYLE.starts_with("slidefadevert"));
 
     // commit
-    auto       workspaceIDLeft  = getWorkspaceIDNameFromString((*PSWIPEUSER ? "r-1" : "m-1")).id;
-    auto       workspaceIDRight = getWorkspaceIDNameFromString((*PSWIPEUSER ? "r+1" : "m+1")).id;
-    const auto SWIPEDISTANCE    = std::clamp(*PSWIPEDIST, sc<int64_t>(1LL), sc<int64_t>(UINT32_MAX));
+    const bool USEREAL              = *PSWIPEUSER || m_step != 1;
+    auto       workspaceIDLeft      = getWorkspaceIDNameFromString(std::format("{}-{}", USEREAL ? "r" : "m", m_step)).id;
+    auto       workspaceIDRight     = getWorkspaceIDNameFromString(std::format("{}+{}", USEREAL ? "r" : "m", m_step)).id;
+    const auto SWIPEDISTANCE        = std::clamp(*PSWIPEDIST, sc<int64_t>(1LL), sc<int64_t>(UINT32_MAX));
+    const bool OVERSHOOTSLOWERBOUND = m_step > 1 && m_workspaceBegin->m_id > 0 && m_step >= m_workspaceBegin->m_id;
 
     // If we've been swiping off the right end with PSWIPENEW enabled, there is
     // no workspace there yet, and we need to choose an ID for a new one now.
     if (workspaceIDRight <= m_workspaceBegin->m_id && *PSWIPENEW)
-        workspaceIDRight = getWorkspaceIDNameFromString("r+1").id;
+        workspaceIDRight = getWorkspaceIDNameFromString(std::format("r+{}", m_step)).id;
 
     auto         PWORKSPACER = State::workspaceState()->query().id(workspaceIDRight).run(); // not guaranteed if PSWIPENEW || PSWIPENUMBER
     auto         PWORKSPACEL = State::workspaceState()->query().id(workspaceIDLeft).run();  // not guaranteed if PSWIPENUMBER
@@ -214,7 +226,9 @@ void CUnifiedWorkspaceSwipeGesture::end() {
 
     PHLWORKSPACE pSwitchedTo = nullptr;
 
-    if ((abs(m_delta) < SWIPEDISTANCE * *PSWIPEPERC && (*PSWIPEFORC == 0 || (*PSWIPEFORC != 0 && m_avgSpeed < *PSWIPEFORC))) || abs(m_delta) < 2) {
+    // r-N resolves an overshoot to workspace 1, so force a revert based on the requested step instead.
+    if ((m_delta < 0 && OVERSHOOTSLOWERBOUND) || (abs(m_delta) < SWIPEDISTANCE * *PSWIPEPERC && (*PSWIPEFORC == 0 || (*PSWIPEFORC != 0 && m_avgSpeed < *PSWIPEFORC))) ||
+        abs(m_delta) < 2) {
         // revert
         if (abs(m_delta) < 2) {
             if (PWORKSPACEL)

@@ -1,5 +1,7 @@
 #include "WorkspaceSwipeGesture.hpp"
 
+#include <optional>
+
 #include "../../../../Compositor.hpp"
 #include "../../../../state/WorkspaceState.hpp"
 #include "../../../../desktop/state/FocusState.hpp"
@@ -24,7 +26,15 @@ void CWorkspaceSwipeGesture::begin(const ITrackpadGesture::STrackpadGestureBegin
     if (onMonitor < 2 && !*PSWIPENEW)
         return; // disallow swiping when there's 1 workspace on a monitor
 
-    g_pUnifiedWorkspaceSwipe->begin();
+    // Force the animation axis to match the actual swipe direction, so a vertical grid swipe slides
+    // vertically regardless of the global `workspaces` animation style (and horizontal stays horizontal).
+    std::optional<bool> vertical;
+    if (e.direction == TRACKPAD_GESTURE_DIR_UP || e.direction == TRACKPAD_GESTURE_DIR_DOWN)
+        vertical = true;
+    else if (e.direction == TRACKPAD_GESTURE_DIR_LEFT || e.direction == TRACKPAD_GESTURE_DIR_RIGHT)
+        vertical = false;
+
+    g_pUnifiedWorkspaceSwipe->begin(m_step, vertical);
 }
 
 void CWorkspaceSwipeGesture::update(const ITrackpadGesture::STrackpadGestureUpdate& e) {
